@@ -3,56 +3,107 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import traceback
 from pathlib import Path
 
 
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "http://localhost:3000",
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": (
-        "Content-Type, Authorization, authorization, "
-        "X-Appwrite-JWT, x-appwrite-jwt"
-    ),
-    "Access-Control-Max-Age": "86400",
-}
-
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://hxabyte.com",
+    "https://www.hxabyte.com",
+]
 
 MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "8"))
 DEMUCS_MODEL = os.environ.get("DEMUCS_MODEL", "htdemucs")
 DEMUCS_SEGMENT = os.environ.get("DEMUCS_SEGMENT", "5")
 DEMUCS_TIMEOUT_SECONDS = int(os.environ.get("DEMUCS_TIMEOUT_SECONDS", "840"))
 
+# Use mp3 to reduce response size. Use "wav" only for testing tiny clips.
+DEMUCS_OUTPUT_FORMAT = os.environ.get("DEMUCS_OUTPUT_FORMAT", "mp3").lower()
+DEMUCS_MP3_BITRATE = os.environ.get("DEMUCS_MP3_BITRATE", "192")
+
+
+def get_req_headers(context):
+    headers = getattr(context.req, "headers", {}) or {}
+
+    if isinstance(headers, dict):
+        return headers
+
+    return {}
+
+
+def get_header(headers, key):
+    if not isinstance(headers, dict):
+        return None
+
+    return (
+        headers.get(key)
+        or headers.get(key.lower())
+        or headers.get(key.upper())
+        or headers.get(key.title())
+    )
+
+
+def get_cors_headers(context):
+    headers = get_req_headers(context)
+
+    origin = (
+        get_header(headers, "origin")
+        or get_header(headers, "Origin")
+        or "http://localhost:3000"
+    )
+
+    if origin not in ALLOWED_ORIGINS:
+        origin = "http://localhost:3000"
+
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": (
+            "Content-Type, Authorization, authorization, "
+            "X-Appwrite-JWT, x-appwrite-jwt"
+        ),
+        "Access-Control-Max-Age": "86400",
+    }
+
 
 def json_response(context, payload, status=200):
-    return context.res.json(payload, status, CORS_HEADERS)
+    return context.res.json(payload, status, get_cors_headers(context))
 
 
 def text_response(context, text, status=200):
-    return context.res.text(text, status, CORS_HEADERS)
+    return context.res.text(text, status, get_cors_headers(context))
 
 
 def get_request_body(context):
     req = context.req
 
-    body = getattr(req, "body", None)
-
-    if isinstance(body, dict):
-        return body
-
-    if isinstance(body, str) and body.strip():
-        try:
-            return json.loads(body)
-        except Exception:
-            return {"raw": body}
-
-    for attr in ["body_json", "bodyJson", "body_text", "bodyText"]:
+    for attr in ["body_json", "bodyJson"]:
         value = getattr(req, attr, None)
 
         if isinstance(value, dict):
             return value
+
+        if isinstance(value, str) and value.strip():
+            try:
+                return json.loads(value)
+            except Exception:
+                pass
+
+    for attr in ["body", "body_text", "bodyText", "body_raw", "bodyRaw"]:
+        value = getattr(req, attr, None)
+
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8")
+            except Exception:
+                return {}
 
         if isinstance(value, str) and value.strip():
             try:
@@ -65,7 +116,7 @@ def get_request_body(context):
 
 def safe_filename(name):
     allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    cleaned = "".join(ch for ch in name if ch in allowed)
+    cleaned = "".join(ch for ch in str(name) if ch in allowed)
     return cleaned or "input.mp3"
 
 
@@ -123,6 +174,19 @@ def file_to_base64_audio_url(path):
     return f"data:{mime};base64,{encoded}"
 
 
+def find_stem_file(stem_folder, stem_name):
+    possible_files = [
+        stem_folder / f"{stem_name}.mp3",
+        stem_folder / f"{stem_name}.wav",
+    ]
+
+    for file_path in possible_files:
+        if file_path.exists():
+            return file_path
+
+    return None
+
+
 def find_demucs_output_folder(output_dir, track_stem):
     possible = [
         output_dir / DEMUCS_MODEL / track_stem,
@@ -137,12 +201,12 @@ def find_demucs_output_folder(output_dir, track_stem):
         if not folder.is_dir():
             continue
 
-        if (
-            (folder / "drums.wav").exists()
-            and (folder / "bass.wav").exists()
-            and (folder / "vocals.wav").exists()
-            and (folder / "other.wav").exists()
-        ):
+        has_drums = find_stem_file(folder, "drums") is not None
+        has_bass = find_stem_file(folder, "bass") is not None
+        has_vocals = find_stem_file(folder, "vocals") is not None
+        has_other = find_stem_file(folder, "other") is not None
+
+        if has_drums and has_bass and has_vocals and has_other:
             return folder
 
     return None
@@ -150,7 +214,7 @@ def find_demucs_output_folder(output_dir, track_stem):
 
 def run_demucs(context, input_path, output_dir):
     command = [
-        "python",
+        sys.executable,
         "-m",
         "demucs",
         "-n",
@@ -165,8 +229,12 @@ def run_demucs(context, input_path, output_dir):
         "1",
         "--out",
         str(output_dir),
-        str(input_path),
     ]
+
+    if DEMUCS_OUTPUT_FORMAT == "mp3":
+        command.extend(["--mp3", "--mp3-bitrate", str(DEMUCS_MP3_BITRATE)])
+
+    command.append(str(input_path))
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
@@ -220,8 +288,10 @@ def handle_health(context):
             "status": "ok",
             "service": "ai-engine",
             "ffmpeg": shutil.which("ffmpeg") or "not-found",
+            "python": sys.executable,
             "demucs_model": DEMUCS_MODEL,
             "demucs_segment": DEMUCS_SEGMENT,
+            "demucs_output_format": DEMUCS_OUTPUT_FORMAT,
             "max_file_mb": MAX_FILE_MB,
         },
     )
@@ -258,7 +328,18 @@ def handle_stem_separate(context):
         )
 
     audio_base64 = strip_data_url_prefix(audio_base64)
-    approx_bytes = estimate_base64_size_bytes(audio_base64)
+
+    try:
+        approx_bytes = estimate_base64_size_bytes(audio_base64)
+    except Exception:
+        return json_response(
+            context,
+            {
+                "success": False,
+                "detail": "Invalid audioBase64.",
+            },
+            400,
+        )
 
     if approx_bytes > MAX_FILE_MB * 1024 * 1024:
         return json_response(
@@ -294,10 +375,15 @@ def handle_stem_separate(context):
                 400,
             )
 
-        tempo, duration = detect_tempo_and_duration(input_path)
+        tempo = None
+        duration = None
 
-        context.log(f"Detected tempo: {tempo}")
-        context.log(f"Detected duration: {duration}")
+        try:
+            tempo, duration = detect_tempo_and_duration(input_path)
+            context.log(f"Detected tempo: {tempo}")
+            context.log(f"Detected duration: {duration}")
+        except Exception as tempo_error:
+            context.error(f"Tempo detection failed: {str(tempo_error)}")
 
         run_demucs(context, input_path, output_dir)
 
@@ -307,16 +393,16 @@ def handle_stem_separate(context):
             raise RuntimeError("Demucs output folder not found.")
 
         stem_paths = {
-            "drums": stem_folder / "drums.wav",
-            "bass": stem_folder / "bass.wav",
-            "vocals": stem_folder / "vocals.wav",
-            "instrument": stem_folder / "other.wav",
+            "drums": find_stem_file(stem_folder, "drums"),
+            "bass": find_stem_file(stem_folder, "bass"),
+            "vocals": find_stem_file(stem_folder, "vocals"),
+            "instrument": find_stem_file(stem_folder, "other"),
         }
 
         missing = [
             stem_name
             for stem_name, stem_path in stem_paths.items()
-            if not stem_path.exists()
+            if stem_path is None or not stem_path.exists()
         ]
 
         if missing:
@@ -338,6 +424,7 @@ def handle_stem_separate(context):
                 "tempo": tempo,
                 "duration": duration,
                 "model": DEMUCS_MODEL,
+                "outputFormat": DEMUCS_OUTPUT_FORMAT,
                 "stems": stems,
             },
             200,

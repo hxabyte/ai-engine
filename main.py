@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import base64
 import json
 import os
@@ -262,6 +263,24 @@ def run_demucs(context, input_path, output_dir):
     return True
 
 
+def handle_backend_test(context):
+    now_utc = datetime.now(timezone.utc)
+
+    return json_response(
+        context,
+        {
+            "success": True,
+            "message": "Python backend test successful",
+            "service": "HXABYTE AI Engine",
+            "serverTimeUTC": now_utc.isoformat(),
+            "serverTimestamp": int(now_utc.timestamp()),
+            "python": sys.executable,
+            "path": getattr(context.req, "path", "/"),
+            "method": getattr(context.req, "method", "GET"),
+        },
+        200,
+    )
+
 def handle_root(context):
     return json_response(
         context,
@@ -453,6 +472,8 @@ def main(context):
                 context,
                 "Hello World from HXABYTE AI Engine"
             )
+        if path in ["/test-date", "/ai/music/test-date"] and method in ["GET", "POST"]:
+             return handle_backend_test(context)
 
         if (
             method == "POST"

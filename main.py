@@ -7,9 +7,6 @@ import tempfile
 import traceback
 from pathlib import Path
 
-import librosa
-import numpy as np
-
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "http://localhost:3000",
@@ -27,6 +24,7 @@ MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "8"))
 DEMUCS_MODEL = os.environ.get("DEMUCS_MODEL", "htdemucs")
 DEMUCS_SEGMENT = os.environ.get("DEMUCS_SEGMENT", "5")
 DEMUCS_TIMEOUT_SECONDS = int(os.environ.get("DEMUCS_TIMEOUT_SECONDS", "840"))
+
 
 def json_response(context, payload, status=200):
     return context.res.json(payload, status, CORS_HEADERS)
@@ -151,24 +149,27 @@ def find_demucs_output_folder(output_dir, track_stem):
 
 
 def run_demucs(context, input_path, output_dir):
-command = [
-    "python",
-    "-m",
-    "demucs",
-    "-n",
-    DEMUCS_MODEL,
-    "--device",
-    "cpu",
-    "--segment",
-    str(DEMUCS_SEGMENT),
-    "--shifts",
-    "0",
-    "-j",
-    "1",
-    "--out",
-    str(output_dir),
-    str(input_path),
-]
+    command = [
+        "python",
+        "-m",
+        "demucs",
+        "-n",
+        DEMUCS_MODEL,
+        "--device",
+        "cpu",
+        "--segment",
+        str(DEMUCS_SEGMENT),
+        "--shifts",
+        "0",
+        "-j",
+        "1",
+        "--out",
+        str(output_dir),
+        str(input_path),
+    ]
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
 
     context.log("Running Demucs command:")
     context.log(" ".join(command))
@@ -178,6 +179,7 @@ command = [
         capture_output=True,
         text=True,
         timeout=DEMUCS_TIMEOUT_SECONDS,
+        env=env,
     )
 
     if result.stdout:
@@ -350,8 +352,8 @@ def main(context):
         context.log(f"Method: {method}")
         context.log(f"Path: {path}")
 
-          if method == "OPTIONS":
-            return context.res.text("", 200, CORS_HEADERS)
+        if method == "OPTIONS":
+            return text_response(context, "", 200)
 
         if path == "/" and method in ["GET", "POST"]:
             return handle_root(context)

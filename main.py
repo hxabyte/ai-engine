@@ -12,12 +12,14 @@ import numpy as np
 
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "http://localhost:3000",
+    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": (
         "Content-Type, Authorization, authorization, "
         "X-Appwrite-JWT, x-appwrite-jwt"
     ),
+    "Access-Control-Max-Age": "86400",
 }
 
 
@@ -25,7 +27,6 @@ MAX_FILE_MB = int(os.environ.get("MAX_FILE_MB", "8"))
 DEMUCS_MODEL = os.environ.get("DEMUCS_MODEL", "htdemucs")
 DEMUCS_SEGMENT = os.environ.get("DEMUCS_SEGMENT", "5")
 DEMUCS_TIMEOUT_SECONDS = int(os.environ.get("DEMUCS_TIMEOUT_SECONDS", "840"))
-
 
 def json_response(context, payload, status=200):
     return context.res.json(payload, status, CORS_HEADERS)
@@ -82,18 +83,22 @@ def estimate_base64_size_bytes(base64_string):
 
 
 def normalize_tempo(raw_tempo):
-    if isinstance(raw_tempo, np.ndarray):
-        if raw_tempo.size == 0:
-            return None
-        raw_tempo = raw_tempo.flatten()[0]
-
     try:
+        import numpy as np
+
+        if isinstance(raw_tempo, np.ndarray):
+            if raw_tempo.size == 0:
+                return None
+            raw_tempo = raw_tempo.flatten()[0]
+
         return round(float(raw_tempo), 2)
     except Exception:
         return None
 
 
 def detect_tempo_and_duration(input_path):
+    import librosa
+
     y, sr = librosa.load(str(input_path), mono=True, sr=22050)
 
     if y is None or len(y) == 0:
@@ -146,22 +151,24 @@ def find_demucs_output_folder(output_dir, track_stem):
 
 
 def run_demucs(context, input_path, output_dir):
-    command = [
-        "python",
-        "-m",
-        "demucs",
-        "-n",
-        DEMUCS_MODEL,
-        "--segment",
-        str(DEMUCS_SEGMENT),
-        "--shifts",
-        "0",
-        "-j",
-        "1",
-        "--out",
-        str(output_dir),
-        str(input_path),
-    ]
+command = [
+    "python",
+    "-m",
+    "demucs",
+    "-n",
+    DEMUCS_MODEL,
+    "--device",
+    "cpu",
+    "--segment",
+    str(DEMUCS_SEGMENT),
+    "--shifts",
+    "0",
+    "-j",
+    "1",
+    "--out",
+    str(output_dir),
+    str(input_path),
+]
 
     context.log("Running Demucs command:")
     context.log(" ".join(command))
@@ -343,8 +350,8 @@ def main(context):
         context.log(f"Method: {method}")
         context.log(f"Path: {path}")
 
-        if method == "OPTIONS":
-            return text_response(context, "", 200)
+          if method == "OPTIONS":
+            return context.res.text("", 200, CORS_HEADERS)
 
         if path == "/" and method in ["GET", "POST"]:
             return handle_root(context)
